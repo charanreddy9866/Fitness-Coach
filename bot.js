@@ -20,6 +20,22 @@ const supabase = createClient(
 
 const COACH_PROMPT = 'You are an elite personal fitness coach with 15 years of experience.\n\nRULES:\n1. When creating workouts:\n   - Format each exercise on a new line\n   - Format: Exercise Name | Sets x Reps | Weight | Notes\n   - Example: Bench Press | 4x6-8 | 185lbs | Rest 3 min\n   - Always include 6-8 exercises per workout\n   - Match exercises to user fitness level\n   - Avoid exercises that affect any injuries mentioned\n\n2. When user logs a workout:\n   - Acknowledge their effort with specific feedback\n   - Point out form cues if applicable\n\n3. Adapt to user goals:\n   - Strength: Heavy weights, low reps (3-6), long rest\n   - Hypertrophy: Medium weights, medium reps (8-12)\n   - Endurance: Light weights, high reps (12-15+)\n   - Weight loss: Compound movements, some cardio\n\n4. Be encouraging, knowledgeable, and results-focused.';
 
+// Common foods database (can be expanded)
+const FOOD_DATABASE = {
+  'chicken breast': { calories: 165, protein: 31, carbs: 0, fats: 3.6, serving: '100g' },
+  'brown rice': { calories: 111, protein: 2.6, carbs: 23, fats: 0.9, serving: '100g' },
+  'broccoli': { calories: 34, protein: 2.8, carbs: 7, fats: 0.4, serving: '100g' },
+  'salmon': { calories: 208, protein: 20, carbs: 0, fats: 13, serving: '100g' },
+  'egg': { calories: 155, protein: 13, carbs: 1.1, fats: 11, serving: '1 large' },
+  'oats': { calories: 389, protein: 17, carbs: 66, fats: 6.9, serving: '100g' },
+  'banana': { calories: 89, protein: 1.1, carbs: 23, fats: 0.3, serving: '1 medium' },
+  'almonds': { calories: 579, protein: 21, carbs: 22, fats: 50, serving: '100g' },
+  'greek yogurt': { calories: 59, protein: 10, carbs: 3.3, fats: 0.4, serving: '100g' },
+  'sweet potato': { calories: 86, protein: 1.6, carbs: 20, fats: 0.1, serving: '100g' },
+  'ground beef': { calories: 250, protein: 26, carbs: 0, fats: 17, serving: '100g' },
+  'white rice': { calories: 130, protein: 2.7, carbs: 28, fats: 0.3, serving: '100g' },
+};
+
 async function askAI(prompt) {
   var chatCompletion = await groq.chat.completions.create({
     messages: [
@@ -135,7 +151,7 @@ async function getWeeklyStats(userId, supabase) {
   try {
     const today = new Date();
     const thisWeekStart = new Date(today);
-    thisWeekStart.setDate(today.getDate() - today.getDay()); // Sunday
+    thisWeekStart.setDate(today.getDate() - today.getDay());
     const thisWeekStartStr = thisWeekStart.toISOString().split('T')[0];
 
     const lastWeekStart = new Date(thisWeekStart);
@@ -144,14 +160,12 @@ async function getWeeklyStats(userId, supabase) {
 
     const lastWeekEndStr = thisWeekStart.toISOString().split('T')[0];
 
-    // Get this week's data
     const thisWeekResult = await supabase
       .from('rep_logs')
       .select('*')
       .eq('user_id', userId)
       .gte('logged_at', thisWeekStartStr);
 
-    // Get last week's data
     const lastWeekResult = await supabase
       .from('rep_logs')
       .select('*')
@@ -162,11 +176,9 @@ async function getWeeklyStats(userId, supabase) {
     const thisWeekLogs = thisWeekResult.data || [];
     const lastWeekLogs = lastWeekResult.data || [];
 
-    // Calculate this week's stats
     const thisWeekStats = calculateStats(thisWeekLogs);
     const lastWeekStats = calculateStats(lastWeekLogs);
 
-    // Calculate progress
     const volumeChange = thisWeekStats.totalVolume - lastWeekStats.totalVolume;
     const volumePercent = lastWeekStats.totalVolume > 0 
       ? Math.round((volumeChange / lastWeekStats.totalVolume) * 100)
@@ -234,6 +246,79 @@ function calculateStats(logs) {
 }
 
 // ===== END WEEKLY PROGRESS UTILITIES =====
+
+// ===== NUTRITION UTILITIES =====
+async function getNutritionStats(userId, supabase, days = 1) {
+  try {
+    const today = new Date();
+    const startDate = new Date(today);
+    startDate.setDate(today.getDate() - days + 1);
+    const startDateStr = startDate.toISOString().split('T')[0];
+
+    const result = await supabase
+      .from('meals')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('meal_date', startDateStr);
+
+    const meals = result.data || [];
+
+    let totalCalories = 0;
+    let totalProtein = 0;
+    let totalCarbs = 0;
+    let totalFats = 0;
+    let mealCount = 0;
+
+    for (let i = 0; i < meals.length; i++) {
+      const meal = meals[i];
+      totalCalories += meal.calories || 0;
+      totalProtein += meal.protein || 0;
+      totalCarbs += meal.carbs || 0;
+      totalFats += meal.fats || 0;
+      mealCount++;
+    }
+
+    return {
+      calories: Math.round(totalCalories),
+      protein: Math.round(totalProtein),
+      carbs: Math.round(totalCarbs),
+      fats: Math.round(totalFats),
+      mealCount: mealCount,
+    };
+  } catch (error) {
+    console.error('Error calculating nutrition stats:', error);
+    return null;
+  }
+}
+
+function getFoodNutrition(foodName, quantity = 1) {
+  const food = FOOD_DATABASE[foodName.toLowerCase()];
+  if (!food) return null;
+
+  return {
+    name: foodName,
+    calories: Math.round(food.calories * quantity),
+    protein: Math.round(food.protein * quantity * 10) / 10,
+    carbs: Math.round(food.carbs * quantity * 10) / 10,
+    fats: Math.round(food.fats * quantity * 10) / 10,
+    serving: food.serving,
+  };
+}
+
+function searchFoods(query) {
+  const results = [];
+  const lowerQuery = query.toLowerCase();
+
+  for (const [foodName, nutrition] of Object.entries(FOOD_DATABASE)) {
+    if (foodName.includes(lowerQuery)) {
+      results.push(foodName);
+    }
+  }
+
+  return results.slice(0, 5);
+}
+
+// ===== END NUTRITION UTILITIES =====
 
 client.once('ready', function() {
   console.log('');
@@ -317,6 +402,59 @@ async function registerCommands() {
       .setDescription('View your weekly progress report'),
 
     new SlashCommandBuilder()
+      .setName('meal')
+      .setDescription('Log a meal with macros')
+      .addStringOption(function(option) {
+        return option.setName('food').setDescription('Food name (e.g., chicken breast, brown rice)').setRequired(true);
+      })
+      .addNumberOption(function(option) {
+        return option.setName('quantity').setDescription('Quantity (servings, default: 1)').setRequired(false);
+      })
+      .addIntegerOption(function(option) {
+        return option.setName('calories').setDescription('Calories (optional, override)').setRequired(false);
+      })
+      .addIntegerOption(function(option) {
+        return option.setName('protein').setDescription('Protein in grams (optional, override)').setRequired(false);
+      })
+      .addIntegerOption(function(option) {
+        return option.setName('carbs').setDescription('Carbs in grams (optional, override)').setRequired(false);
+      })
+      .addIntegerOption(function(option) {
+        return option.setName('fats').setDescription('Fats in grams (optional, override)').setRequired(false);
+      }),
+
+    new SlashCommandBuilder()
+      .setName('nutrition')
+      .setDescription('View your daily nutrition summary'),
+
+    new SlashCommandBuilder()
+      .setName('macros')
+      .setDescription('View or set your daily macro goals')
+      .addStringOption(function(option) {
+        return option.setName('action').setDescription('View or set goals').setRequired(true)
+          .addChoices(
+            { name: 'View', value: 'view' },
+            { name: 'Set', value: 'set' }
+          );
+      })
+      .addIntegerOption(function(option) {
+        return option.setName('protein').setDescription('Daily protein goal in grams (for set)').setRequired(false);
+      })
+      .addIntegerOption(function(option) {
+        return option.setName('carbs').setDescription('Daily carbs goal in grams (for set)').setRequired(false);
+      })
+      .addIntegerOption(function(option) {
+        return option.setName('fats').setDescription('Daily fats goal in grams (for set)').setRequired(false);
+      }),
+
+    new SlashCommandBuilder()
+      .setName('foods')
+      .setDescription('Search food database')
+      .addStringOption(function(option) {
+        return option.setName('query').setDescription('Food to search (e.g., chicken, rice)').setRequired(true);
+      }),
+
+    new SlashCommandBuilder()
       .setName('coach')
       .setDescription('Ask the coach anything about fitness')
       .addStringOption(function(option) {
@@ -352,6 +490,10 @@ client.on('interactionCreate', async function(interaction) {
     else if (cmd === 'profile') await handleProfile(interaction, discordId);
     else if (cmd === 'streak') await handleStreak(interaction, discordId);
     else if (cmd === 'weekly') await handleWeekly(interaction, discordId);
+    else if (cmd === 'meal') await handleMeal(interaction, discordId);
+    else if (cmd === 'nutrition') await handleNutrition(interaction, discordId);
+    else if (cmd === 'macros') await handleMacros(interaction, discordId);
+    else if (cmd === 'foods') await handleFoods(interaction, discordId);
     else if (cmd === 'coach') await handleCoach(interaction, discordId);
 
   } catch (error) {
@@ -753,6 +895,187 @@ async function handleWeekly(interaction, discordId) {
   }
 
   embed.setFooter({ text: 'Keep crushing it! Share your progress.' });
+
+  return interaction.editReply({ embeds: [embed] });
+}
+
+async function handleMeal(interaction, discordId) {
+  const userResult = await supabase
+    .from('users')
+    .select('id')
+    .eq('discord_id', discordId)
+    .single();
+
+  if (userResult.error) throw new Error('User not found. Run /setup first!');
+
+  const food = interaction.options.getString('food');
+  const quantity = interaction.options.getNumber('quantity') || 1;
+  const overrideCalories = interaction.options.getInteger('calories');
+  const overrideProtein = interaction.options.getInteger('protein');
+  const overrideCarbs = interaction.options.getInteger('carbs');
+  const overrideFats = interaction.options.getInteger('fats');
+
+  let mealData;
+
+  if (overrideCalories !== null) {
+    mealData = {
+      calories: overrideCalories,
+      protein: overrideProtein || 0,
+      carbs: overrideCarbs || 0,
+      fats: overrideFats || 0,
+    };
+  } else {
+    mealData = getFoodNutrition(food, quantity);
+    if (!mealData) {
+      return interaction.editReply({
+        content: `❌ Food "${food}" not found. Try /foods to search the database.`,
+      });
+    }
+  }
+
+  const today = new Date().toISOString().split('T')[0];
+
+  await supabase.from('meals').insert({
+    user_id: userResult.data.id,
+    food_name: food,
+    meal_date: today,
+    calories: mealData.calories,
+    protein: mealData.protein,
+    carbs: mealData.carbs,
+    fats: mealData.fats,
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(0xe74c3c)
+    .setTitle('🍽️ Meal Logged!')
+    .addFields(
+      { name: 'Food', value: food, inline: true },
+      { name: 'Quantity', value: String(quantity), inline: true },
+      { name: 'Calories', value: mealData.calories + ' kcal', inline: true },
+      { name: 'Protein', value: mealData.protein + 'g', inline: true },
+      { name: 'Carbs', value: mealData.carbs + 'g', inline: true },
+      { name: 'Fats', value: mealData.fats + 'g', inline: true }
+    )
+    .setFooter({ text: 'Use /nutrition to see your daily totals' });
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleNutrition(interaction, discordId) {
+  const userResult = await supabase
+    .from('users')
+    .select('id')
+    .eq('discord_id', discordId)
+    .single();
+
+  if (userResult.error) throw new Error('User not found. Run /setup first!');
+
+  const stats = await getNutritionStats(userResult.data.id, supabase, 1);
+
+  if (!stats || stats.mealCount === 0) {
+    return interaction.editReply({
+      content: '🍽️ No meals logged today yet. Use /meal to start tracking!',
+    });
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xe74c3c)
+    .setTitle('🥗 Today\'s Nutrition')
+    .setThumbnail(interaction.user.displayAvatarURL())
+    .addFields(
+      { name: 'Calories', value: stats.calories + ' kcal', inline: true },
+      { name: 'Protein', value: stats.protein + 'g', inline: true },
+      { name: 'Carbs', value: stats.carbs + 'g', inline: true },
+      { name: 'Fats', value: stats.fats + 'g', inline: true },
+      { name: 'Meals Logged', value: String(stats.mealCount), inline: true }
+    )
+    .setFooter({ text: 'Use /macros set to set your daily goals' });
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleMacros(interaction, discordId) {
+  const action = interaction.options.getString('action');
+
+  if (action === 'view') {
+    const userResult = await supabase
+      .from('users')
+      .select('daily_protein_goal, daily_carbs_goal, daily_fats_goal')
+      .eq('discord_id', discordId)
+      .single();
+
+    if (userResult.error || !userResult.data.daily_protein_goal) {
+      return interaction.editReply({
+        content: '❌ No macro goals set. Use `/macros set` to configure your goals.',
+      });
+    }
+
+    const stats = await getNutritionStats((await supabase.from('users').select('id').eq('discord_id', discordId).single()).data.id, supabase, 1);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x3498db)
+      .setTitle('🎯 Your Macro Goals')
+      .addFields(
+        { name: 'Protein', value: `${stats.protein}g / ${userResult.data.daily_protein_goal}g`, inline: true },
+        { name: 'Carbs', value: `${stats.carbs}g / ${userResult.data.daily_carbs_goal}g`, inline: true },
+        { name: 'Fats', value: `${stats.fats}g / ${userResult.data.daily_fats_goal}g`, inline: true }
+      );
+
+    return interaction.editReply({ embeds: [embed] });
+  } else {
+    const protein = interaction.options.getInteger('protein');
+    const carbs = interaction.options.getInteger('carbs');
+    const fats = interaction.options.getInteger('fats');
+
+    if (!protein || !carbs || !fats) {
+      return interaction.editReply({
+        content: '❌ Please provide protein, carbs, and fats goals.',
+      });
+    }
+
+    await supabase
+      .from('users')
+      .update({
+        daily_protein_goal: protein,
+        daily_carbs_goal: carbs,
+        daily_fats_goal: fats,
+      })
+      .eq('discord_id', discordId);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x27ae60)
+      .setTitle('✅ Macro Goals Set!')
+      .addFields(
+        { name: 'Daily Protein', value: protein + 'g', inline: true },
+        { name: 'Daily Carbs', value: carbs + 'g', inline: true },
+        { name: 'Daily Fats', value: fats + 'g', inline: true }
+      );
+
+    return interaction.editReply({ embeds: [embed] });
+  }
+}
+
+async function handleFoods(interaction, discordId) {
+  const query = interaction.options.getString('query');
+  const results = searchFoods(query);
+
+  if (results.length === 0) {
+    return interaction.editReply({
+      content: `❌ No foods found matching "${query}". Try another search!`,
+    });
+  }
+
+  let foodList = '';
+  for (let i = 0; i < results.length; i++) {
+    const food = FOOD_DATABASE[results[i]];
+    foodList += `**${results[i]}** - ${food.calories} cal | P: ${food.protein}g C: ${food.carbs}g F: ${food.fats}g (per ${food.serving})\n`;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xf39c12)
+    .setTitle('🔍 Food Search Results')
+    .setDescription(foodList)
+    .setFooter({ text: 'Use /meal to log any of these foods' });
 
   return interaction.editReply({ embeds: [embed] });
 }
