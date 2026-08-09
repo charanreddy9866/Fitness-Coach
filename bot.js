@@ -35,7 +35,6 @@ async function askAI(prompt) {
 // ===== STREAK UTILITIES =====
 async function calculateAndUpdateStreak(discordId, supabase) {
   try {
-    // Get user's current data (using discord_id to find them)
     const userResult = await supabase
       .from('users')
       .select('current_streak, longest_streak, last_workout_date, streak_milestones')
@@ -48,15 +47,13 @@ async function calculateAndUpdateStreak(discordId, supabase) {
     }
 
     const userData = userResult.data;
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const today = new Date().toISOString().split('T')[0];
     const lastWorkoutDate = userData.last_workout_date;
     let newStreak = userData.current_streak || 0;
     let longestStreak = userData.longest_streak || 0;
     let streakReset = false;
 
-    // Streak calculation logic
     if (!lastWorkoutDate) {
-      // First workout ever
       newStreak = 1;
     } else {
       const lastDate = new Date(lastWorkoutDate);
@@ -64,24 +61,19 @@ async function calculateAndUpdateStreak(discordId, supabase) {
       const daysDiff = Math.floor((todayDate - lastDate) / (1000 * 60 * 60 * 24));
 
       if (daysDiff === 1) {
-        // Consecutive day - increment streak
         newStreak += 1;
       } else if (daysDiff === 0) {
-        // Already worked out today - don't change streak
         return { success: true, streak: newStreak, isNewDay: false };
       } else {
-        // Gap detected - reset streak but keep history
         newStreak = 1;
         streakReset = true;
       }
     }
 
-    // Update longest streak if needed
     if (newStreak > longestStreak) {
       longestStreak = newStreak;
     }
 
-    // Check for milestone badges
     const milestones = userData.streak_milestones || {};
     const milestoneDays = [7, 14, 30, 60, 100];
     let unlockedBadges = [];
@@ -93,7 +85,6 @@ async function calculateAndUpdateStreak(discordId, supabase) {
       }
     }
 
-    // Update database
     const updateResult = await supabase
       .from('users')
       .update({
@@ -133,12 +124,116 @@ function getStreakBadge(streakDays) {
 }
 
 function getStreakVisual(streakDays) {
-  // Create a visual representation
   const fireEmojis = Math.min(Math.ceil(streakDays / 10), 10);
   return '🔥'.repeat(fireEmojis);
 }
 
 // ===== END STREAK UTILITIES =====
+
+// ===== WEEKLY PROGRESS UTILITIES =====
+async function getWeeklyStats(userId, supabase) {
+  try {
+    const today = new Date();
+    const thisWeekStart = new Date(today);
+    thisWeekStart.setDate(today.getDate() - today.getDay()); // Sunday
+    const thisWeekStartStr = thisWeekStart.toISOString().split('T')[0];
+
+    const lastWeekStart = new Date(thisWeekStart);
+    lastWeekStart.setDate(thisWeekStart.getDate() - 7);
+    const lastWeekStartStr = lastWeekStart.toISOString().split('T')[0];
+
+    const lastWeekEndStr = thisWeekStart.toISOString().split('T')[0];
+
+    // Get this week's data
+    const thisWeekResult = await supabase
+      .from('rep_logs')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('logged_at', thisWeekStartStr);
+
+    // Get last week's data
+    const lastWeekResult = await supabase
+      .from('rep_logs')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('logged_at', lastWeekStartStr)
+      .lt('logged_at', lastWeekEndStr);
+
+    const thisWeekLogs = thisWeekResult.data || [];
+    const lastWeekLogs = lastWeekResult.data || [];
+
+    // Calculate this week's stats
+    const thisWeekStats = calculateStats(thisWeekLogs);
+    const lastWeekStats = calculateStats(lastWeekLogs);
+
+    // Calculate progress
+    const volumeChange = thisWeekStats.totalVolume - lastWeekStats.totalVolume;
+    const volumePercent = lastWeekStats.totalVolume > 0 
+      ? Math.round((volumeChange / lastWeekStats.totalVolume) * 100)
+      : 0;
+    const workoutDiff = thisWeekStats.workoutCount - lastWeekStats.workoutCount;
+
+    return {
+      thisWeek: thisWeekStats,
+      lastWeek: lastWeekStats,
+      volumeChange: volumeChange,
+      volumePercent: volumePercent,
+      workoutDiff: workoutDiff,
+    };
+  } catch (error) {
+    console.error('Error calculating weekly stats:', error);
+    return null;
+  }
+}
+
+function calculateStats(logs) {
+  if (!logs || logs.length === 0) {
+    return {
+      workoutCount: 0,
+      totalVolume: 0,
+      totalSets: 0,
+      totalReps: 0,
+      uniqueExercises: 0,
+      topExercises: [],
+    };
+  }
+
+  let totalVolume = 0;
+  let totalSets = 0;
+  let totalReps = 0;
+  let exerciseMap = {};
+
+  for (let i = 0; i < logs.length; i++) {
+    const log = logs[i];
+    totalSets += log.sets_completed;
+    totalReps += log.sets_completed * log.reps_per_set;
+    totalVolume += log.sets_completed * log.reps_per_set * (log.weight || 0);
+
+    if (!exerciseMap[log.exercise_name]) {
+      exerciseMap[log.exercise_name] = 0;
+    }
+    exerciseMap[log.exercise_name] += log.sets_completed * log.reps_per_set * (log.weight || 0);
+  }
+
+  const topExercises = Object.entries(exerciseMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([name, volume]) => ({ name, volume: Math.round(volume) }));
+
+  const uniqueCount = Object.keys(exerciseMap).length;
+  const workoutDays = new Set(logs.map(log => log.logged_at.split('T')[0])).size;
+
+  return {
+    workoutCount: workoutDays,
+    totalVolume: Math.round(totalVolume),
+    totalSets: totalSets,
+    totalReps: totalReps,
+    uniqueExercises: uniqueCount,
+    topExercises: topExercises,
+  };
+}
+
+// ===== END WEEKLY PROGRESS UTILITIES =====
 
 client.once('ready', function() {
   console.log('');
@@ -212,14 +307,14 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('profile')
       .setDescription('View your fitness profile'),
-    
-    new SlashCommandBuilder()
-  .setName('weekly')
-  .setDescription('View your weekly progress report'),
 
     new SlashCommandBuilder()
       .setName('streak')
       .setDescription('View your workout streak and milestone badges'),
+
+    new SlashCommandBuilder()
+      .setName('weekly')
+      .setDescription('View your weekly progress report'),
 
     new SlashCommandBuilder()
       .setName('coach')
@@ -256,6 +351,7 @@ client.on('interactionCreate', async function(interaction) {
     else if (cmd === 'stats') await handleStats(interaction, discordId);
     else if (cmd === 'profile') await handleProfile(interaction, discordId);
     else if (cmd === 'streak') await handleStreak(interaction, discordId);
+    else if (cmd === 'weekly') await handleWeekly(interaction, discordId);
     else if (cmd === 'coach') await handleCoach(interaction, discordId);
 
   } catch (error) {
@@ -386,7 +482,6 @@ async function handleLog(interaction, discordId) {
     feedback = feedback.substring(0, 1000) + '...';
   }
 
-  // Calculate and update streak
   const streakResult = await calculateAndUpdateStreak(discordId, supabase);
 
   var embed = new EmbedBuilder()
@@ -398,7 +493,6 @@ async function handleLog(interaction, discordId) {
     )
     .addFields({ name: 'Coach Feedback', value: feedback });
 
-  // Add streak info if successfully updated
   if (streakResult.success && streakResult.isNewDay) {
     let streakMessage = `🔥 **Streak: ${streakResult.streak} days** ${getStreakVisual(streakResult.streak)}`;
     
@@ -570,7 +664,6 @@ async function handleStreak(interaction, discordId) {
       }
     );
 
-  // Add milestone badges
   const milestones = userData.streak_milestones || {};
   let badgeList = '';
   const milestoneDays = [7, 14, 30, 60, 100];
@@ -588,6 +681,78 @@ async function handleStreak(interaction, discordId) {
       value: badgeList,
     });
   }
+
+  return interaction.editReply({ embeds: [embed] });
+}
+
+async function handleWeekly(interaction, discordId) {
+  const userResult = await supabase
+    .from('users')
+    .select('id, current_streak')
+    .eq('discord_id', discordId)
+    .single();
+
+  if (userResult.error || !userResult.data) {
+    return interaction.editReply({
+      content: '❌ User not found. Run /setup first!',
+    });
+  }
+
+  const userId = userResult.data.id;
+  const currentStreak = userResult.data.current_streak || 0;
+
+  const weeklyData = await getWeeklyStats(userId, supabase);
+
+  if (!weeklyData) {
+    return interaction.editReply({
+      content: '❌ Error loading weekly stats. Try again later.',
+    });
+  }
+
+  const thisWeek = weeklyData.thisWeek;
+
+  if (thisWeek.workoutCount === 0) {
+    return interaction.editReply({
+      content: '📊 No workouts logged this week yet. Start with /log to begin tracking!',
+    });
+  }
+
+  let topExercisesText = '';
+  if (thisWeek.topExercises.length > 0) {
+    for (let i = 0; i < thisWeek.topExercises.length; i++) {
+      const ex = thisWeek.topExercises[i];
+      topExercisesText += `${i + 1}. ${ex.name} (${ex.volume} lbs)\n`;
+    }
+  }
+
+  let progressText = `📈 Workouts: ${weeklyData.workoutDiff > 0 ? '+' : ''}${weeklyData.workoutDiff}`;
+  if (weeklyData.volumeChange !== 0) {
+    progressText += `\n📊 Volume: ${weeklyData.volumeChange > 0 ? '+' : ''}${weeklyData.volumeChange} lbs (${weeklyData.volumePercent > 0 ? '+' : ''}${weeklyData.volumePercent}%)`;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0x2ecc71)
+    .setTitle('📊 Weekly Progress Report')
+    .setThumbnail(interaction.user.displayAvatarURL())
+    .addFields(
+      {
+        name: '💪 This Week',
+        value: `Workouts: ${thisWeek.workoutCount}\nVolume: ${thisWeek.totalVolume} lbs\nUnique Exercises: ${thisWeek.uniqueExercises}\nCurrent Streak: ${currentStreak} days 🔥`,
+      },
+      {
+        name: '📈 vs Last Week',
+        value: progressText || 'No data to compare',
+      }
+    );
+
+  if (topExercisesText) {
+    embed.addFields({
+      name: '🏋️ Top Exercises',
+      value: topExercisesText,
+    });
+  }
+
+  embed.setFooter({ text: 'Keep crushing it! Share your progress.' });
 
   return interaction.editReply({ embeds: [embed] });
 }
