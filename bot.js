@@ -212,6 +212,10 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('profile')
       .setDescription('View your fitness profile'),
+    
+    new SlashCommandBuilder()
+  .setName('weekly')
+  .setDescription('View your weekly progress report'),
 
     new SlashCommandBuilder()
       .setName('streak')
