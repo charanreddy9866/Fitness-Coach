@@ -32,6 +32,114 @@ async function askAI(prompt) {
   return chatCompletion.choices[0].message.content;
 }
 
+// ===== STREAK UTILITIES =====
+async function calculateAndUpdateStreak(discordId, supabase) {
+  try {
+    // Get user's current data (using discord_id to find them)
+    const userResult = await supabase
+      .from('users')
+      .select('current_streak, longest_streak, last_workout_date, streak_milestones')
+      .eq('discord_id', discordId)
+      .single();
+
+    if (userResult.error) {
+      console.error('Error fetching user for streak:', userResult.error);
+      return { success: false, error: userResult.error };
+    }
+
+    const userData = userResult.data;
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const lastWorkoutDate = userData.last_workout_date;
+    let newStreak = userData.current_streak || 0;
+    let longestStreak = userData.longest_streak || 0;
+    let streakReset = false;
+
+    // Streak calculation logic
+    if (!lastWorkoutDate) {
+      // First workout ever
+      newStreak = 1;
+    } else {
+      const lastDate = new Date(lastWorkoutDate);
+      const todayDate = new Date(today);
+      const daysDiff = Math.floor((todayDate - lastDate) / (1000 * 60 * 60 * 24));
+
+      if (daysDiff === 1) {
+        // Consecutive day - increment streak
+        newStreak += 1;
+      } else if (daysDiff === 0) {
+        // Already worked out today - don't change streak
+        return { success: true, streak: newStreak, isNewDay: false };
+      } else {
+        // Gap detected - reset streak but keep history
+        newStreak = 1;
+        streakReset = true;
+      }
+    }
+
+    // Update longest streak if needed
+    if (newStreak > longestStreak) {
+      longestStreak = newStreak;
+    }
+
+    // Check for milestone badges
+    const milestones = userData.streak_milestones || {};
+    const milestoneDays = [7, 14, 30, 60, 100];
+    let unlockedBadges = [];
+
+    for (const day of milestoneDays) {
+      if (newStreak >= day && !milestones[day]) {
+        milestones[day] = true;
+        unlockedBadges.push(day);
+      }
+    }
+
+    // Update database
+    const updateResult = await supabase
+      .from('users')
+      .update({
+        current_streak: newStreak,
+        longest_streak: longestStreak,
+        last_workout_date: today,
+        streak_milestones: milestones,
+      })
+      .eq('discord_id', discordId);
+
+    if (updateResult.error) {
+      console.error('Error updating streak:', updateResult.error);
+      return { success: false, error: updateResult.error };
+    }
+
+    return {
+      success: true,
+      streak: newStreak,
+      longestStreak: longestStreak,
+      streakReset: streakReset,
+      unlockedBadges: unlockedBadges,
+      isNewDay: true,
+    };
+  } catch (error) {
+    console.error('Streak calculation error:', error);
+    return { success: false, error: error };
+  }
+}
+
+function getStreakBadge(streakDays) {
+  if (streakDays >= 100) return '👑 Unstoppable';
+  if (streakDays >= 60) return '💪 Beast Mode';
+  if (streakDays >= 30) return '🔥🔥🔥 Legend';
+  if (streakDays >= 14) return '🔥🔥 Warrior';
+  if (streakDays >= 7) return '🔥 Starter';
+  return '';
+}
+
+function getStreakVisual(streakDays) {
+  // Create a visual representation
+  const fireEmojis = Math.min(Math.ceil(streakDays / 10), 10);
+  return '🔥'.repeat(fireEmojis);
+}
+
+// ===== END STREAK UTILITIES =====
+
 client.once('ready', function() {
   console.log('');
   console.log('=================================');
@@ -106,6 +214,10 @@ async function registerCommands() {
       .setDescription('View your fitness profile'),
 
     new SlashCommandBuilder()
+      .setName('streak')
+      .setDescription('View your workout streak and milestone badges'),
+
+    new SlashCommandBuilder()
       .setName('coach')
       .setDescription('Ask the coach anything about fitness')
       .addStringOption(function(option) {
@@ -139,6 +251,7 @@ client.on('interactionCreate', async function(interaction) {
     else if (cmd === 'history') await handleHistory(interaction, discordId);
     else if (cmd === 'stats') await handleStats(interaction, discordId);
     else if (cmd === 'profile') await handleProfile(interaction, discordId);
+    else if (cmd === 'streak') await handleStreak(interaction, discordId);
     else if (cmd === 'coach') await handleCoach(interaction, discordId);
 
   } catch (error) {
@@ -269,6 +382,9 @@ async function handleLog(interaction, discordId) {
     feedback = feedback.substring(0, 1000) + '...';
   }
 
+  // Calculate and update streak
+  const streakResult = await calculateAndUpdateStreak(discordId, supabase);
+
   var embed = new EmbedBuilder()
     .setColor(0xf39c12)
     .setTitle('Workout Logged!')
@@ -277,6 +393,24 @@ async function handleLog(interaction, discordId) {
       { name: 'Volume', value: sets + 'x' + reps + (weight ? ' @ ' + weight + 'lbs' : ''), inline: true }
     )
     .addFields({ name: 'Coach Feedback', value: feedback });
+
+  // Add streak info if successfully updated
+  if (streakResult.success && streakResult.isNewDay) {
+    let streakMessage = `🔥 **Streak: ${streakResult.streak} days** ${getStreakVisual(streakResult.streak)}`;
+    
+    if (streakResult.unlockedBadges.length > 0) {
+      streakMessage += `\n🎉 **BADGE UNLOCKED:** ${getStreakBadge(streakResult.streak)}`;
+    }
+    
+    if (streakResult.streakReset) {
+      streakMessage += '\n⚠️ Streak reset, but keep pushing!';
+    }
+    
+    embed.addFields({
+      name: '🏆 Streak Update',
+      value: streakMessage,
+    });
+  }
 
   await interaction.editReply({ embeds: [embed] });
 }
@@ -398,6 +532,60 @@ async function handleProfile(interaction, discordId) {
     .setFooter({ text: 'Use /setup to update your profile' });
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleStreak(interaction, discordId) {
+  const userResult = await supabase
+    .from('users')
+    .select('current_streak, longest_streak, streak_milestones')
+    .eq('discord_id', discordId)
+    .single();
+
+  if (userResult.error || !userResult.data) {
+    return interaction.editReply({
+      content: '❌ No streak data found. Start logging workouts with /log to build a streak!',
+    });
+  }
+
+  const userData = userResult.data;
+
+  const embed = new EmbedBuilder()
+    .setColor('#FF6B6B')
+    .setTitle('🔥 Your Workout Streak')
+    .setThumbnail(interaction.user.displayAvatarURL())
+    .addFields(
+      {
+        name: '🏃 Current Streak',
+        value: `${userData.current_streak} ${userData.current_streak === 1 ? 'day' : 'days'} ${getStreakVisual(userData.current_streak)}`,
+        inline: true,
+      },
+      {
+        name: '🏆 Longest Streak',
+        value: `${userData.longest_streak} days`,
+        inline: true,
+      }
+    );
+
+  // Add milestone badges
+  const milestones = userData.streak_milestones || {};
+  let badgeList = '';
+  const milestoneDays = [7, 14, 30, 60, 100];
+
+  for (const day of milestoneDays) {
+    const badge = getStreakBadge(day);
+    if (badge) {
+      badgeList += milestones[day] ? `✅ ${badge} (${day}d)\n` : `⬜ ${badge} (${day}d)\n`;
+    }
+  }
+
+  if (badgeList) {
+    embed.addFields({
+      name: '🎖️ Milestone Badges',
+      value: badgeList,
+    });
+  }
+
+  return interaction.editReply({ embeds: [embed] });
 }
 
 async function handleCoach(interaction, discordId) {
